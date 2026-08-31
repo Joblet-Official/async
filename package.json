@@ -1,0 +1,32 @@
+{
+  "name": "async-job-search",
+  "version": "1.0.0",
+  "description": "MCP integration for searching current Async job listings supplied through Joveo.",
+  "main": "server/src/index.ts",
+  "scripts": {
+    "start": "node --import tsx server/src/index.ts",
+    "tunnel": "npx cloudflared tunnel --url http://localhost:3001",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.10.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}
