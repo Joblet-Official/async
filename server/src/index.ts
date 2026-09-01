@@ -897,7 +897,7 @@ function buildMcpServer() {
 }
 
 // OpenAI domain verification challenge
-const OPENAI_APPS_CHALLENGE_TOKEN = "MTb_KfghTb2_GX4vGjcRj38JRsg0CCo1RFpZ9HxrJ6I";
+const OPENAI_APPS_CHALLENGE_TOKEN = "MTb_KfghTb2_GX4vGjcRj38JRsgoCColRFpZ9HxrJ6I";
 
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
   res.type("text/plain").send(OPENAI_APPS_CHALLENGE_TOKEN);
