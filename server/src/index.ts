@@ -51,6 +51,7 @@ const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "
 const WIDGET_URI = "ui://async/job-cards-v3.html";
 
 const REDIRECT_DOMAINS = [
+  "https://joblet.ai",
   ...(APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [])
 ];
 
