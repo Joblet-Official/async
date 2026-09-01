@@ -251,7 +251,6 @@
       const cards = visibleJobs.map((job) => {
         const safeUrl = toSafeHttpsUrl(job.applicationUrl);
         const employer = job.employer || "Employer not listed";
-        const employmentType = job.schedule || job.contractType || "Type not listed";
 
         return `
           <article class="job-card">
@@ -261,10 +260,6 @@
               <div class="meta-row">
                 <span class="meta-icon" aria-hidden="true">📍</span>
                 <span class="meta-value">${escapeHtml(job.location || "Remote")}</span>
-              </div>
-              <div class="meta-row">
-                <span class="meta-icon" aria-hidden="true">💼</span>
-                <span class="meta-value">${escapeHtml(employmentType)}</span>
               </div>
               <div class="meta-row">
                 <span class="meta-icon" aria-hidden="true">🏢</span>

@@ -35,7 +35,7 @@ const FEED_URL =
 const APPLY_URL_HOST = (process.env.ASYNC_APPLY_HOST || "tnl2.jometer.com").trim();
 
 // Public domain the widget is served from (used for the ChatGPT App CSP).
-const WIDGET_DOMAIN = process.env.ASYNC_WIDGET_DOMAIN || "https://mcp.async.joveo.com";
+const WIDGET_DOMAIN = process.env.ASYNC_WIDGET_DOMAIN || "https://async-0vu1.onrender.com";
 
 // How often to re-download the feed and refresh the table (default 1 hour).
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60 * 60 * 1000);
@@ -48,7 +48,7 @@ const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "
 
 // ChatGPT uses the resource URI as the widget cache key. Bump this version
 // whenever the widget HTML or resource metadata changes.
-const WIDGET_URI = "ui://async/job-cards-v2.html";
+const WIDGET_URI = "ui://async/job-cards-v3.html";
 
 const REDIRECT_DOMAINS = [
   ...(APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [])
@@ -774,11 +774,12 @@ function buildMcpServer() {
     tools: [{
       name: "search_async_job_listings",
       title: "Search Async job listings",
-      description: "Searches current Async job listings by role or keyword. To filter by place, include it in the query text (e.g. 'software engineer in Dallas, Texas'); for 'near me' searches the tool uses the approximate location the client provides. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Async.",
+      description: "Searches current Async job listings by role or keyword and, when provided, city, state, or country. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Async.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'software engineer', 'nurse'). A place may be included naturally (e.g. 'warehouse jobs in Ohio' or 'nurse near me').", minLength: 1, maxLength: 120 },
+          query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'software engineer', 'nurse'). Do not include a location here.", minLength: 1, maxLength: 120 },
+          location: { type: "string", description: "City, state, or country to filter by. Omit if the user did not specify one.", maxLength: 100 },
           limit: { type: "integer", minimum: 1, maximum: 8, default: 6 },
         },
         required: ["query"],
@@ -836,28 +837,10 @@ function buildMcpServer() {
           content: [{ type: "text", text: "Please provide a search query (1–120 characters)." }],
         };
       }
+      const rawLocation = typeof args.location === "string" ? args.location.trim().slice(0, 100) : "";
       const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 6, 8));
 
-      const meta = (request.params._meta ?? {}) as Record<string, any>;
-      const coarse = meta["openai/userLocation"];
-      let coarseLocation = "";
-      if (typeof coarse === "string") {
-        coarseLocation = coarse;
-      } else if (coarse && typeof coarse === "object") {
-        coarseLocation = [coarse.city, coarse.region ?? coarse.state, coarse.country]
-          .filter(Boolean)
-          .map(String)
-          .join(", ");
-      }
-
-      const nearMeRe = /\b(near\s*me|near\s*by|nearby|around\s*me|close\s*to\s*me|in\s+my\s+area)\b/i;
-      const wantsNearMe = nearMeRe.test(rawQuery);
-      const cleanedQuery = rawQuery.replace(nearMeRe, " ").replace(/\s+/g, " ").trim();
-
-      let { q, location } = parseSearch(cleanedQuery);
-      if (!location && wantsNearMe && coarseLocation) {
-        location = normalizeLocationInput(coarseLocation);
-      }
+      const { q, location } = parseSearch(rawQuery, rawLocation);
 
       const result = searchDb(q, location, limit);
       const jobs = result.jobs.map(toClientJob);
