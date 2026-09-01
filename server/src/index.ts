@@ -876,7 +876,7 @@ function buildMcpServer() {
 }
 
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-  res.type("text/plain").send("Oc24tmDJOKcmnXx1u9pJy7jklW2cxx9NuwKMGz5VsCA");
+  res.type("text/plain").send("MTb_KfghTb2_GX4vGjcRj38JRsg0CCo1RFpZ9HxrJ6I");
 });
 
 app.all("/mcp", async (req, res) => {
