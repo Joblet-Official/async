@@ -291,6 +291,22 @@ function mapGroup(baseKey: string, group: any[]): Row {
 // ----------------------------------------------------
 let lastSync = 0;
 let syncing = false;
+let initialSyncPromise: Promise<number> | null = null;
+
+function ensureInitialSync(): Promise<number> {
+  if (lastSync > 0) {
+    const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
+    return Promise.resolve(row ? row.n : 0);
+  }
+  if (!initialSyncPromise) {
+    initialSyncPromise = syncFeed().catch((error) => {
+      // Permit a later request to retry after a transient feed failure.
+      initialSyncPromise = null;
+      throw error;
+    });
+  }
+  return initialSyncPromise;
+}
 
 async function syncFeed(): Promise<number> {
   const getJobCount = () => {
@@ -831,6 +847,10 @@ function buildMcpServer() {
     const args = request.params.arguments as any;
 
     try {
+      // Keep the web server available during a cold start, but never answer a
+      // job search from an empty database before the initial feed is ready.
+      await ensureInitialSync();
+
       const rawQuery = typeof args.query === "string" ? args.query.trim() : "";
       if (!rawQuery || rawQuery.length > 120) {
         return {
@@ -876,9 +896,11 @@ function buildMcpServer() {
   return server;
 }
 
+// OpenAI domain verification challenge
+const OPENAI_APPS_CHALLENGE_TOKEN = "MTb_KfghTb2_GX4vGjcRj38JRsg0CCo1RFpZ9HxrJ6I";
+
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-  res.setHeader("Content-Type", "text/plain");
-  res.status(200).send("MTb_KfghTb2_GX4vGjcRj38JRsg0CCo1RFpZ9HxrJ6I");
+  res.type("text/plain").send(OPENAI_APPS_CHALLENGE_TOKEN);
 });
 
 app.all("/mcp", async (req, res) => {
@@ -897,13 +919,16 @@ app.all("/mcp", async (req, res) => {
 const PORT = process.env.PORT || 3001;
 
 async function start() {
-  const count = await syncFeed();
-  console.log(`Initial feed sync completed: ${count} jobs`);
-
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Feed: ${FEED_URL}`);
     console.log(`DB:   ${DB_PATH}`);
+  });
+
+  ensureInitialSync().then((count) => {
+    console.log(`Initial feed sync completed: ${count} jobs`);
+  }).catch((error) => {
+    console.error("Initial feed sync failed:", error.message);
   });
 
   setInterval(() => {
@@ -913,7 +938,4 @@ async function start() {
   }, SYNC_INTERVAL_MS);
 }
 
-start().catch((error) => {
-  console.error("Startup failed:", error.message);
-  process.exit(1);
-});
+start();
