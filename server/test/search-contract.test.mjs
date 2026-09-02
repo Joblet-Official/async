@@ -89,6 +89,14 @@ test("returns exact role and full-description matches without broad prefix leaka
     },
     { id: "credit", title: "AI Trainer", description: "A credit check may be required." },
     { id: "payout", title: "Flexible AI Trainer", description: "Includes weekly payouts." },
+    {
+      id: "remote-ai-germany",
+      title: "AI Language Evaluator (German)",
+      description: "Evaluate German-language AI responses.",
+      city: "Remote",
+      state: "",
+      country: "Germany",
+    },
   ]);
 
   const expectations = [
@@ -111,6 +119,17 @@ test("returns exact role and full-description matches without broad prefix leaka
       assert.deepEqual(titles(result), expectedTitles, query);
     }
   }
+
+  const remoteAi = searchDb(database, "remote AI", {
+    country: "Germany",
+    label: "Germany",
+  }, 8);
+  assert.equal(remoteAi.total, 0);
+  assert.deepEqual(titles(remoteAi), []);
+
+  const noBroadOrRetry = searchDb(database, "product designer", null, 8);
+  assert.equal(noBroadOrRetry.total, 0);
+  assert.deepEqual(titles(noBroadOrRetry), []);
 
   for (const query of ['"', "*", "OR", "NEAR(", "R&D"]) {
     assert.doesNotThrow(() => searchDb(database, query, null, 8));

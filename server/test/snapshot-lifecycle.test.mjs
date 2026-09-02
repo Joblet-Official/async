@@ -58,17 +58,28 @@ function createLegacySnapshot(filePath, modifiedAtMs = Date.now(), jobCount = 25
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (let index = 0; index < jobCount; index += 1) {
-    const title = index === 0 ? "Statistics Expert - AI Trainer" : `Fixture Role ${index}`;
+    const title = index === 0
+      ? "Statistics Expert - AI Trainer"
+      : index === 1
+        ? "AI Language Evaluator (German)"
+        : `Fixture Role ${index}`;
     const summary = index === 0
       ? "A saved listing used to verify restart-safe search behavior."
       : `Fixture description ${index}`;
+    const isGermanListing = index === 1;
     insert.run(
-      `legacy-${index}`, title, "Scale AI", "Remote", "Seattle", "WA",
-      "United States", "98101", "Contract", "Contract", "", "",
+      `legacy-${index}`, title, "Scale AI", "",
+      isGermanListing ? "Mannheim" : "Seattle",
+      isGermanListing ? "Baden-Wurttemberg" : "WA",
+      isGermanListing ? "Germany" : "United States",
+      isGermanListing ? "" : "98101", "Contract", "Contract", "", "",
       summary, `${summary} Python JavaScript later searchable content`,
       `https://${APPLY_HOST}/apply/${index}`, "AI Training",
-      "Seattle, WA, United States", `${title} Scale AI AI Training`.toLowerCase(),
-      "remote seattle wa washington us united states 98101",
+      isGermanListing ? "Mannheim, Baden-Wurttemberg, Germany" : "Seattle, WA, United States",
+      `${title} Scale AI AI Training`.toLowerCase(),
+      isGermanListing
+        ? "mannheim baden wurttemberg germany de"
+        : "remote seattle wa washington us united states 98101",
     );
   }
   database.exec("COMMIT; INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild');");
@@ -770,6 +781,8 @@ test("enforces the scanned tool contract and distinct result states", async () =
   const descriptor = tools.result.tools.find((tool) => tool.name === "search_async_job_listings");
   assert.equal(descriptor.inputSchema.additionalProperties, false);
   assert.equal(descriptor.inputSchema.properties.market.additionalProperties, false);
+  assert.equal(descriptor.inputSchema.properties.limit.maximum, 50);
+  assert.match(descriptor.inputSchema.properties.limit.description, /at most eight/i);
   assert.deepEqual(
     descriptor.outputSchema.properties.data.properties.status.enum,
     ["ok", "no_results", "invalid_request", "location_unavailable", "unavailable"],
@@ -778,7 +791,8 @@ test("enforces the scanned tool contract and distinct result states", async () =
   const invalidArguments = [
     { query: "engineer", extra: true },
     { query: "engineer", limit: "6" },
-    { query: "engineer", limit: 9 },
+    { query: "engineer", limit: 51 },
+    { query: "engineer", limit: 0 },
     { query: "engineer", useCurrentLocation: "true" },
     { query: "engineer", market: { countryCode: "US", extra: true } },
     { query: "engineer", market: { countryCode: "US" }, useCurrentLocation: true },
@@ -793,6 +807,31 @@ test("enforces the scanned tool contract and distinct result states", async () =
     assert.equal(response.result.structuredContent.data.totalResults, 0);
     assert.deepEqual(response.result.structuredContent.data.jobs, []);
   }
+
+  const oversizedLimit = await callSearch(app, { query: "Fixture jobs", limit: 10 });
+  assert.equal(oversizedLimit.result.isError, undefined);
+  assert.equal(oversizedLimit.result.structuredContent.data.status, "ok");
+  assert.equal(oversizedLimit.result.structuredContent.data.appliedFilters.query, "Fixture");
+  assert.equal(oversizedLimit.result.structuredContent.data.appliedFilters.limit, 8);
+  assert.ok(oversizedLimit.result.structuredContent.data.totalResults > 8);
+  assert.equal(oversizedLimit.result.structuredContent.data.jobs.length, 8);
+
+  const remoteGermany = await callSearch(app, {
+    query: "remote AI",
+    market: { countryCode: "DE" },
+    limit: 10,
+  });
+  assert.equal(remoteGermany.result.isError, undefined);
+  assert.equal(remoteGermany.result.structuredContent.data.status, "ok");
+  assert.equal(remoteGermany.result.structuredContent.data.totalResults, 1);
+  assert.equal(remoteGermany.result.structuredContent.data.appliedFilters.query, "AI");
+  assert.equal(remoteGermany.result.structuredContent.data.appliedFilters.limit, 8);
+  assert.ok(remoteGermany.result.structuredContent.data.jobs.every((job) => /Germany/i.test(job.location)));
+
+  const noBroadRemoteRetry = await callSearch(app, { query: "remote product designer" });
+  assert.equal(noBroadRemoteRetry.result.isError, undefined);
+  assert.equal(noBroadRemoteRetry.result.structuredContent.data.status, "no_results");
+  assert.equal(noBroadRemoteRetry.result.structuredContent.data.totalResults, 0);
 
   const missingLocation = await callSearch(app, { query: "engineer", useCurrentLocation: true });
   assert.equal(missingLocation.result.isError, true);
