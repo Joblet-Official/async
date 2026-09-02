@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --import tsx server/src/index.ts",
     "tunnel": "npx cloudflared tunnel --url http://localhost:3001",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test --test-concurrency=1 server/test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22.5.0"
