@@ -33,7 +33,7 @@ function createTemporaryDirectory() {
   return directory;
 }
 
-function createLegacySnapshot(filePath, modifiedAtMs = Date.now()) {
+function createLegacySnapshot(filePath, modifiedAtMs = Date.now(), jobCount = 25) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const database = new DatabaseSync(filePath);
   database.exec(`
@@ -57,7 +57,7 @@ function createLegacySnapshot(filePath, modifiedAtMs = Date.now()) {
       category, location, search_blob, loc_blob
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  for (let index = 0; index < 25; index += 1) {
+  for (let index = 0; index < jobCount; index += 1) {
     const title = index === 0 ? "Statistics Expert - AI Trainer" : `Fixture Role ${index}`;
     const summary = index === 0
       ? "A saved listing used to verify restart-safe search behavior."
@@ -119,7 +119,7 @@ function xmlEscape(value) {
     .replaceAll("'", "&apos;");
 }
 
-function makeFeed(jobCount, titlePrefix = "Promoted Snapshot Engineer") {
+function makeFeed(jobCount, titlePrefix = "Promoted Snapshot Engineer", overrides = {}) {
   const jobs = [];
   for (let index = 0; index < jobCount; index += 1) {
     const title = index === 0 ? titlePrefix : `Promoted Fixture Role ${index}`;
@@ -140,10 +140,11 @@ function makeFeed(jobCount, titlePrefix = "Promoted Snapshot Engineer") {
       salary: "",
       hours: "Flexible",
       description: `Current ${title} listing with full Python and JavaScript details.`,
+      ...overrides,
     };
     jobs.push(`<job>${Object.entries(fields).map(([key, value]) => `<${key}>${xmlEscape(value)}</${key}>`).join("")}</job>`);
   }
-  return `<?xml version="1.0" encoding="UTF-8"?><jobs>${jobs.join("")}</jobs>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><source>${jobs.join("")}</source>`;
 }
 
 async function reservePort() {
@@ -202,6 +203,7 @@ async function startApp({ dbPath, snapshotDir, feedUrl, env = {} }) {
       ASYNC_REFRESH_WORKER_TIMEOUT_MS: "5000",
       ASYNC_STALE_AFTER_MS: "3600000",
       ASYNC_MAX_STALE_MS: "86400000",
+      ASYNC_MIN_PROMOTED_JOBS: "25",
       ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -273,13 +275,18 @@ async function mcpRequest(child, method, params) {
 }
 
 async function readWidget(child) {
-  return mcpRequest(child, "resources/read", { uri: "ui://async/job-cards-v5.html" });
+  return mcpRequest(child, "resources/read", { uri: "ui://async/job-cards-v6.html" });
 }
 
 async function search(child, query, limit = 6) {
+  return callSearch(child, { query, limit });
+}
+
+async function callSearch(child, args, meta) {
   return mcpRequest(child, "tools/call", {
     name: "search_async_job_listings",
-    arguments: { query, limit },
+    arguments: args,
+    ...(meta ? { _meta: meta } : {}),
   });
 }
 
@@ -468,6 +475,26 @@ test("rejects a bad refresh and leaves the previous snapshot untouched", async (
   assert.equal(rejectedResult.result.structuredContent.data.totalResults, 0);
 });
 
+test("rejects a small first snapshot below the absolute promotion floor", async () => {
+  const directory = createTemporaryDirectory();
+  const snapshotDir = path.join(directory, "snapshots");
+  const feedUrl = await startFeedServer(makeFeed(25, "Partial Initial Feed"));
+  const app = await startApp({
+    dbPath: path.join(directory, "missing.db"),
+    snapshotDir,
+    feedUrl,
+    env: { ASYNC_MIN_PROMOTED_JOBS: "3000" },
+  });
+
+  const unavailable = await waitFor(async () => {
+    const result = await health(app);
+    return result.body.reason === "refresh_failed_no_valid_snapshot" && result.body.lastRefreshFailureMs ? result : null;
+  }, 10000);
+  assert.equal(unavailable.statusCode, 503);
+  assert.equal(unavailable.body.jobs, 0);
+  assert.equal(fs.readdirSync(snapshotDir).some((name) => /^jobs-.*\.db$/.test(name)), false);
+});
+
 test("reports stale snapshots as degraded and expires them only at the configured maximum", async (t) => {
   await t.test("stale but usable", async () => {
     const directory = createTemporaryDirectory();
@@ -513,4 +540,338 @@ test("reports stale snapshots as degraded and expires them only at the configure
     assert.equal(tool.result.structuredContent.data.totalResults, 0);
     assert.equal((await readWidget(app)).result.contents[0].mimeType, "text/html;profile=mcp-app");
   });
+});
+
+test("rejects truncated XML and preserves the last-good snapshot", async (t) => {
+  const completeFeed = makeFeed(25, "Replacement Engineer");
+  const cases = [
+    { name: "missing root close", xml: completeFeed.replace(/<\/source>$/, "") },
+    { name: "partial final job", xml: completeFeed.slice(0, -12) },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const directory = createTemporaryDirectory();
+      const dbPath = path.join(directory, "jobs.db");
+      const snapshotDir = path.join(directory, "snapshots");
+      createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000);
+      const feedUrl = await startFeedServer(fixture.xml);
+      const app = await startApp({ dbPath, snapshotDir, feedUrl });
+
+      const degraded = await waitFor(async () => {
+        const result = await health(app);
+        return result.body.reason === "latest_refresh_failed" ? result : null;
+      }, 10000);
+      assert.equal(degraded.statusCode, 200);
+      assert.equal(degraded.body.jobs, 25);
+      assert.equal((await search(app, "Statistics Expert")).result.structuredContent.data.totalResults, 1);
+      assert.equal((await search(app, "Replacement Engineer")).result.structuredContent.data.totalResults, 0);
+      await stopChild(app);
+    });
+  }
+});
+
+test("parses expected source/job XML without raw closing-tag slicing", async () => {
+  const directory = createTemporaryDirectory();
+  const snapshotDir = path.join(directory, "snapshots");
+  const description = "Current CDATA Safe Engineer listing with full Python and JavaScript details.";
+  const xml = makeFeed(25, "CDATA Safe Engineer")
+    .replace("<source>", "<source><!-- a literal <job></job> in a valid comment is not a listing -->")
+    .replace(
+      "<title>CDATA Safe Engineer</title>",
+      "<title><![CDATA[CDATA Safe Engineer]]></title>",
+    )
+    .replace(
+      `<description>${description}</description>`,
+      `<description><![CDATA[<p>${description} A literal </job> here is text.</p>]]><!-- valid field comment --></description>`,
+    );
+  const feedUrl = await startFeedServer(xml);
+  const app = await startApp({
+    dbPath: path.join(directory, "missing.db"),
+    snapshotDir,
+    feedUrl,
+  });
+
+  const ready = await waitFor(async () => {
+    const result = await health(app);
+    return result.body.status === "ok" ? result : null;
+  }, 15000);
+  assert.equal(ready.body.jobs, 25);
+  const result = await search(app, "CDATA Safe Engineer");
+  assert.equal(result.result.structuredContent.data.status, "ok");
+  assert.equal(result.result.structuredContent.data.totalResults, 1);
+  assert.equal(result.result.structuredContent.data.jobs[0].title, "CDATA Safe Engineer");
+});
+
+test("rejects unexpected feed roots and non-direct job elements", async (t) => {
+  const fixtures = [
+    {
+      name: "unexpected root",
+      xml: makeFeed(25, "Wrong Root Engineer")
+        .replace("<source>", "<jobs>")
+        .replace("</source>", "</jobs>"),
+    },
+    {
+      name: "nested jobs",
+      xml: makeFeed(25, "Nested Job Engineer")
+        .replace("<source>", "<source><wrapper>")
+        .replace("</source>", "</wrapper></source>"),
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    await t.test(fixture.name, async () => {
+      const directory = createTemporaryDirectory();
+      const dbPath = path.join(directory, "jobs.db");
+      const snapshotDir = path.join(directory, "snapshots");
+      createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000);
+      const feedUrl = await startFeedServer(fixture.xml);
+      const app = await startApp({ dbPath, snapshotDir, feedUrl });
+
+      const degraded = await waitFor(async () => {
+        const result = await health(app);
+        return result.body.reason === "latest_refresh_failed" ? result : null;
+      }, 10000);
+      assert.equal(degraded.body.jobs, 25);
+      assert.equal((await search(app, "Statistics Expert")).result.structuredContent.data.totalResults, 1);
+      assert.equal((await search(app, "Engineer")).result.structuredContent.data.totalResults, 0);
+      await stopChild(app);
+    });
+  }
+});
+
+test("fails the entire refresh for an oversized job regardless of invalid-row allowance", async () => {
+  const directory = createTemporaryDirectory();
+  const dbPath = path.join(directory, "jobs.db");
+  const snapshotDir = path.join(directory, "snapshots");
+  createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000);
+  const ordinaryDescription = "Current Oversized Feed Engineer listing with full Python and JavaScript details.";
+  const xml = makeFeed(26, "Oversized Feed Engineer").replace(
+    `<description>${ordinaryDescription}</description>`,
+    `<description>${"x".repeat(270_000)}</description>`,
+  );
+  const feedUrl = await startFeedServer(xml);
+  const app = await startApp({
+    dbPath,
+    snapshotDir,
+    feedUrl,
+    env: { ASYNC_MAX_INVALID_JOB_PERCENT: "100" },
+  });
+
+  const degraded = await waitFor(async () => {
+    const result = await health(app);
+    return result.body.reason === "latest_refresh_failed" ? result : null;
+  }, 10000);
+  assert.equal(degraded.body.jobs, 25);
+  assert.equal((await search(app, "Statistics Expert")).result.structuredContent.data.totalResults, 1);
+  assert.equal((await search(app, "Oversized Feed Engineer")).result.structuredContent.data.totalResults, 0);
+});
+
+test("counts empty required fields as invalid before snapshot promotion", async () => {
+  const directory = createTemporaryDirectory();
+  const dbPath = path.join(directory, "jobs.db");
+  const snapshotDir = path.join(directory, "snapshots");
+  createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000);
+  const xml = makeFeed(26, "Missing Required Title").replace(
+    "<title>Missing Required Title</title>",
+    "<title></title>",
+  );
+  const feedUrl = await startFeedServer(xml);
+  const app = await startApp({ dbPath, snapshotDir, feedUrl });
+
+  const degraded = await waitFor(async () => {
+    const result = await health(app);
+    return result.body.reason === "latest_refresh_failed" ? result : null;
+  }, 10000);
+  assert.equal(degraded.body.jobs, 25);
+  assert.equal((await search(app, "Statistics Expert")).result.structuredContent.data.totalResults, 1);
+  assert.equal((await search(app, "Promoted Fixture Role")).result.structuredContent.data.totalResults, 0);
+});
+
+test("enforces the configured last-good snapshot retention threshold", async (t) => {
+  await t.test("rejects a refresh below 80 percent", async () => {
+    const directory = createTemporaryDirectory();
+    const dbPath = path.join(directory, "jobs.db");
+    const snapshotDir = path.join(directory, "snapshots");
+    createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000, 40);
+    const feedUrl = await startFeedServer(makeFeed(31, "Below Threshold Engineer"));
+    const app = await startApp({ dbPath, snapshotDir, feedUrl });
+
+    const degraded = await waitFor(async () => {
+      const result = await health(app);
+      return result.body.reason === "latest_refresh_failed" ? result : null;
+    }, 10000);
+    assert.equal(degraded.body.jobs, 40);
+    assert.equal((await search(app, "Below Threshold Engineer")).result.structuredContent.data.totalResults, 0);
+    await stopChild(app);
+  });
+
+  await t.test("accepts a refresh at 80 percent", async () => {
+    const directory = createTemporaryDirectory();
+    const dbPath = path.join(directory, "jobs.db");
+    const snapshotDir = path.join(directory, "snapshots");
+    createLegacySnapshot(dbPath, Date.now() - 2 * 60 * 1000, 40);
+    const feedUrl = await startFeedServer(makeFeed(32, "At Threshold Engineer"));
+    const app = await startApp({ dbPath, snapshotDir, feedUrl });
+
+    const ready = await waitFor(async () => {
+      const result = await health(app);
+      return result.body.status === "ok" && result.body.jobs === 32 ? result : null;
+    }, 15000);
+    assert.equal(ready.statusCode, 200);
+    assert.equal((await search(app, "At Threshold Engineer")).result.structuredContent.data.totalResults, 1);
+    await stopChild(app);
+  });
+});
+
+test("normalizes feed and requested US subdivisions symmetrically", async () => {
+  const directory = createTemporaryDirectory();
+  const snapshotDir = path.join(directory, "snapshots");
+  const feedUrl = await startFeedServer(makeFeed(25, "Princeton AI Engineer", {
+    city: "Princeton",
+    state: "New Jersey",
+    country: "US",
+  }));
+  const app = await startApp({
+    dbPath: path.join(directory, "missing.db"),
+    snapshotDir,
+    feedUrl,
+  });
+
+  await waitFor(async () => {
+    const result = await health(app);
+    return result.body.status === "ok" ? result : null;
+  }, 15000);
+
+  for (const region of ["NJ", "New Jersey"]) {
+    const response = await callSearch(app, {
+      query: "Princeton AI Engineer",
+      market: { countryCode: "US", region },
+      limit: 8,
+    });
+    assert.equal(response.result.structuredContent.data.status, "ok");
+    assert.equal(response.result.structuredContent.data.totalResults, 1);
+    assert.ok(response.result.structuredContent.data.jobs.every((job) => job.location === "Princeton, NJ, United States"));
+  }
+});
+
+test("enforces the scanned tool contract and distinct result states", async () => {
+  const directory = createTemporaryDirectory();
+  const dbPath = path.join(directory, "jobs.db");
+  createLegacySnapshot(dbPath);
+  const app = await startApp({
+    dbPath,
+    snapshotDir: path.join(directory, "snapshots"),
+    feedUrl: "http://127.0.0.1:9/unavailable.xml",
+    env: { SYNC_INTERVAL_MS: "86400000" },
+  });
+
+  const tools = await mcpRequest(app, "tools/list", {});
+  const descriptor = tools.result.tools.find((tool) => tool.name === "search_async_job_listings");
+  assert.equal(descriptor.inputSchema.additionalProperties, false);
+  assert.equal(descriptor.inputSchema.properties.market.additionalProperties, false);
+  assert.deepEqual(
+    descriptor.outputSchema.properties.data.properties.status.enum,
+    ["ok", "no_results", "invalid_request", "location_unavailable", "unavailable"],
+  );
+
+  const invalidArguments = [
+    { query: "engineer", extra: true },
+    { query: "engineer", limit: "6" },
+    { query: "engineer", limit: 9 },
+    { query: "engineer", useCurrentLocation: "true" },
+    { query: "engineer", market: { countryCode: "US", extra: true } },
+    { query: "engineer", market: { countryCode: "US" }, useCurrentLocation: true },
+    { query: " " },
+    { query: "jobs" },
+    { query: "roles", market: { countryCode: "US" } },
+  ];
+  for (const args of invalidArguments) {
+    const response = await callSearch(app, args);
+    assert.equal(response.result.isError, true);
+    assert.equal(response.result.structuredContent.data.status, "invalid_request");
+    assert.equal(response.result.structuredContent.data.totalResults, 0);
+    assert.deepEqual(response.result.structuredContent.data.jobs, []);
+  }
+
+  const missingLocation = await callSearch(app, { query: "engineer", useCurrentLocation: true });
+  assert.equal(missingLocation.result.isError, true);
+  assert.equal(missingLocation.result.structuredContent.data.status, "location_unavailable");
+
+  const empty = await callSearch(app, { query: "Nonexistent Quantum Banana Role" });
+  assert.equal(empty.result.isError, undefined);
+  assert.equal(empty.result.structuredContent.data.status, "no_results");
+
+  const successful = await callSearch(app, { query: "Statistics Expert" });
+  assert.equal(successful.result.structuredContent.data.status, "ok");
+  assert.equal(successful.result.structuredContent.data.totalResults, 1);
+
+  const currentLocation = await callSearch(
+    app,
+    { query: "Statistics Expert", useCurrentLocation: true },
+    { "openai/userLocation": { city: "Seattle", region: "WA", country: "US" } },
+  );
+  assert.deepEqual(currentLocation.result.structuredContent.data.appliedFilters.location, {
+    source: "currentLocation",
+  });
+
+  for (const method of ["GET", "DELETE", "PUT", "PATCH"]) {
+    const response = await fetch(`${app.baseUrl}/mcp`, { method });
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("allow"), "POST");
+  }
+
+  const preflight = await fetch(`${app.baseUrl}/mcp`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://chatgpt.com",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type,mcp-protocol-version",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-methods"), "POST,OPTIONS");
+  assert.match(preflight.headers.get("access-control-allow-headers") || "", /MCP-Protocol-Version/i);
+
+  const oversized = await fetch(`${app.baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "tools/call",
+      params: { name: "search_async_job_listings", arguments: { query: "x".repeat(70_000) } },
+    }),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal((await oversized.json()).error.code, -32600);
+
+  const afterOversized = await callSearch(app, { query: "Statistics Expert" });
+  assert.equal(afterOversized.result.structuredContent.data.status, "ok");
+});
+
+test("rate-limits abusive MCP clients without changing ordinary requests", async () => {
+  const directory = createTemporaryDirectory();
+  const dbPath = path.join(directory, "jobs.db");
+  createLegacySnapshot(dbPath);
+  const app = await startApp({
+    dbPath,
+    snapshotDir: path.join(directory, "snapshots"),
+    feedUrl: "http://127.0.0.1:9/unavailable.xml",
+    env: {
+      SYNC_INTERVAL_MS: "86400000",
+      ASYNC_MCP_RATE_LIMIT_MAX_REQUESTS: "1",
+    },
+  });
+
+  const first = await mcpRequest(app, "tools/list", {});
+  assert.ok(first.result.tools.some((tool) => tool.name === "search_async_job_listings"));
+  const second = await fetch(`${app.baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  });
+  assert.equal(second.status, 429);
+  assert.equal(second.headers.get("retry-after"), "60");
+  assert.equal((await second.json()).error.code, -32000);
 });
