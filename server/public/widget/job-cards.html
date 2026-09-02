@@ -300,13 +300,39 @@
     const ALLOWED_APPLY_ORIGIN = "__ASYNC_APPLY_ORIGIN__";
     const textEncoder = new TextEncoder();
     const RESULT_STATE_MESSAGES = Object.freeze({
-      no_results: "No matching jobs found. Try different keywords or broaden the location.",
       invalid_request: "The job search request could not be processed. Try a role or keyword with valid filters.",
       location_unavailable: "Current location is unavailable. Specify a country or region to continue.",
       unavailable: "Job search is temporarily unavailable. Please try again shortly.",
     });
 
+    function setWidgetSurfaceHidden(hidden) {
+      root.hidden = hidden;
+      for (const element of [document.documentElement, document.body]) {
+        if (!element?.style) continue;
+        element.style.height = hidden ? "0" : "";
+        element.style.minHeight = hidden ? "0" : "";
+        element.style.overflow = hidden ? "hidden" : "";
+      }
+      if (document.body?.style) document.body.style.padding = hidden ? "0" : "";
+    }
+
+    function dismissNoResults() {
+      root.innerHTML = "";
+      root.setAttribute("aria-busy", "false");
+      setWidgetSurfaceHidden(true);
+
+      try {
+        const closeRequest = window.openai?.requestClose?.();
+        if (closeRequest && typeof closeRequest.catch === "function") {
+          closeRequest.catch(() => {});
+        }
+      } catch {
+        // The zero-height surface remains hidden if the host cannot close it.
+      }
+    }
+
     function renderJobs(payload) {
+      setWidgetSurfaceHidden(false);
       const toolOutput = payload?.structuredContent || payload;
       const data = toolOutput?.type === "application/json" && toolOutput?.data
         ? toolOutput.data
@@ -314,6 +340,11 @@
 
       if (!data || typeof data !== "object" || typeof data.status !== "string") {
         renderState("Unable to display job listings right now.");
+        return;
+      }
+
+      if (data.status === "no_results") {
+        dismissNoResults();
         return;
       }
 

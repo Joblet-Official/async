@@ -15,31 +15,56 @@ function loadWidgetHarness() {
 
   const root = {
     innerHTML: "",
+    hidden: false,
     attributes: new Map(),
     addEventListener() {},
     querySelector() { return null; },
     setAttribute(name, value) { this.attributes.set(name, value); },
   };
+  let closeRequests = 0;
   const context = {
     console,
     TextEncoder,
     URL,
     Element: class Element {},
     HTMLButtonElement: class HTMLButtonElement {},
-    document: { getElementById: () => root },
+    document: {
+      body: { style: {} },
+      documentElement: { style: {} },
+      getElementById: () => root,
+    },
     window: {
       addEventListener() {},
       matchMedia: () => ({ matches: true }),
-      openai: undefined,
+      openai: {
+        requestClose() {
+          closeRequests += 1;
+          return Promise.resolve();
+        },
+      },
     },
   };
   vm.runInNewContext(`${script}\nglobalThis.__renderJobs = renderJobs;`, context);
-  return { root, renderJobs: context.__renderJobs };
+  return { root, renderJobs: context.__renderJobs, closeRequestCount: () => closeRequests };
 }
 
-test("renders distinct structured states instead of presenting failures as no results", () => {
+test("closes a no-results widget instead of rendering an empty card", () => {
+  const { root, renderJobs, closeRequestCount } = loadWidgetHarness();
+  renderJobs({
+    structuredContent: {
+      type: "application/json",
+      data: { status: "no_results", appliedFilters: { query: "engineer", limit: 6 }, totalResults: 0, jobs: [] },
+    },
+  });
+
+  assert.equal(root.innerHTML, "");
+  assert.equal(root.hidden, true);
+  assert.equal(root.attributes.get("aria-busy"), "false");
+  assert.equal(closeRequestCount(), 1);
+});
+
+test("renders distinct error states without presenting them as no results", () => {
   const cases = [
-    ["no_results", "No matching jobs found."],
     ["invalid_request", "could not be processed"],
     ["location_unavailable", "Current location is unavailable"],
     ["unavailable", "temporarily unavailable"],
@@ -54,7 +79,8 @@ test("renders distinct structured states instead of presenting failures as no re
       },
     });
     assert.match(root.innerHTML, new RegExp(expectedText, "i"));
-    if (status !== "no_results") assert.doesNotMatch(root.innerHTML, /No matching jobs found/i);
+    assert.doesNotMatch(root.innerHTML, /No matching jobs found/i);
+    assert.equal(root.hidden, false);
     assert.equal(root.attributes.get("aria-busy"), "false");
   }
 });

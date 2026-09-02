@@ -286,7 +286,7 @@ async function mcpRequest(child, method, params) {
 }
 
 async function readWidget(child) {
-  return mcpRequest(child, "resources/read", { uri: "ui://async/job-cards-v6.html" });
+  return mcpRequest(child, "resources/read", { uri: "ui://async/job-cards-v7.html" });
 }
 
 async function search(child, query, limit = 6) {
@@ -783,6 +783,8 @@ test("enforces the scanned tool contract and distinct result states", async () =
   assert.equal(descriptor.inputSchema.properties.market.additionalProperties, false);
   assert.equal(descriptor.inputSchema.properties.limit.maximum, 50);
   assert.match(descriptor.inputSchema.properties.limit.description, /at most eight/i);
+  assert.match(descriptor.description, /at most one call/i);
+  assert.match(descriptor.description, /do not automatically retry/i);
   assert.deepEqual(
     descriptor.outputSchema.properties.data.properties.status.enum,
     ["ok", "no_results", "invalid_request", "location_unavailable", "unavailable"],
@@ -822,11 +824,12 @@ test("enforces the scanned tool contract and distinct result states", async () =
     limit: 10,
   });
   assert.equal(remoteGermany.result.isError, undefined);
-  assert.equal(remoteGermany.result.structuredContent.data.status, "ok");
-  assert.equal(remoteGermany.result.structuredContent.data.totalResults, 1);
-  assert.equal(remoteGermany.result.structuredContent.data.appliedFilters.query, "AI");
+  assert.equal(remoteGermany.result.structuredContent.data.status, "no_results");
+  assert.equal(remoteGermany.result.structuredContent.data.totalResults, 0);
+  assert.equal(remoteGermany.result.structuredContent.data.appliedFilters.query, "remote AI");
   assert.equal(remoteGermany.result.structuredContent.data.appliedFilters.limit, 8);
-  assert.ok(remoteGermany.result.structuredContent.data.jobs.every((job) => /Germany/i.test(job.location)));
+  assert.deepEqual(remoteGermany.result.structuredContent.data.jobs, []);
+  assert.match(remoteGermany.result.content[0].text, /do not retry/i);
 
   const noBroadRemoteRetry = await callSearch(app, { query: "remote product designer" });
   assert.equal(noBroadRemoteRetry.result.isError, undefined);
